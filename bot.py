@@ -139,7 +139,6 @@ def save_password(message):
     log_action(user_id, "Зберіг " + parts[1])
     bot.send_message(message.chat.id, "Збережено: " + parts[1])
 
-# --- ФУНКЦІЯ НАГАДУВАННЯ ---
 @bot.message_handler(commands=['remind'])
 def set_reminder(message):
     parts = message.text.split(maxsplit=2)
@@ -169,4 +168,5 @@ def set_reminder(message):
     except:
         bot.send_message(message.chat.id, "Помилка. Приклад: /remind 5 хв Купити молоко")
 
-@bot.message_handler(content_types=['t
+@bot.message_handler(content_types=['text'])
+def text_handler(messag
