@@ -1,552 +1,419 @@
 
-import os
-import json
-import secrets
+import telebot
+import sqlite3
+import random
 import string
-import threading
-from datetime import datetime, date
-from flask import Flask
-from telebot import TeleBot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import os
+from flask import Flask, request
+from cryptography.fernet import Fernet
+from telebot import types
 
-# ============== НАСТРОЙКИ ==============
+# ========== НАСТРОЙКИ ==========
 
-TOKEN = "ВСТАВЬ_НОВЫЙ_ТОКЕН"
-ADMIN_ID = 7623353420
+TOKEN = "ВСТАВЬ_ТОКЕН_БОТА"
+ADMIN_ID = 123456789  # ТВОЙ TELEGRAM ID
 
-bot = TeleBot(TOKEN)
+bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-DB_FILE = "passwords.json"
-USERS_FILE = "users.json"
-LOG_FILE = "bot_logs.json"
+# Ключ создаётся автоматически и сохраняется
+if not os.path.exists("secret.key"):
+    with open("secret.key", "wb") as f:
+        f.write(Fernet.generate_key())
 
-last_generated = {}
-pending = {}
+with open("secret.key", "rb") as f:
+    cipher = Fernet(f.read())
 
-# ============== БАЗА ДАННЫХ ==============
+db = sqlite3.connect("bot.db", check_same_thread=False)
+cur = db.cursor()
 
-def load_json(filename):
-    try:
-        with open(filename, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users (
+ id INTEGER PRIMARY KEY,
+ username TEXT
+)
+""")
 
-def save_json(filename, data):
-    temp = filename + ".tmp"
-    with open(temp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-    os.replace(temp, filename)
+cur.execute("""
+CREATE TABLE IF NOT EXISTS passwords (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ user_id INTEGER,
+ name TEXT,
+ password TEXT
+)
+""")
 
-def log_action(uid, action):
-    logs = load_json(LOG_FILE)
-    uid = str(uid)
-    logs.setdefault(uid, [])
-    logs[uid].append({
-        "action": action,
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
-    logs[uid] = logs[uid][-100:]
-    save_json(LOG_FILE, logs)
+cur.execute("""
+CREATE TABLE IF NOT EXISTS stats (
+ user_id INTEGER PRIMARY KEY,
+ generations INTEGER DEFAULT 0
+)
+""")
 
-def register_user(user):
-    users = load_json(USERS_FILE)
-    uid = str(user.id)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+db.commit()
 
-    if uid not in users:
-        users[uid] = {
-            "username": user.username or "NoUsername",
-            "first_name": user.first_name or "User",
-            "joined": now
-        }
+settings = {}
 
-    users[uid]["last_seen"] = now
-    save_json(USERS_FILE, users)
+# ========== МЕНЮ ==========
 
-# ============== ГЕНЕРАТОРЫ ==============
-
-def generate_password(length=16):
-    alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_+="
-
-    chars = [
-        secrets.choice(string.ascii_lowercase),
-        secrets.choice(string.ascii_uppercase),
-        secrets.choice(string.digits),
-        secrets.choice("!@#$%^&*()-_+=")
-    ]
-
-    chars += [secrets.choice(alphabet) for _ in range(length - 4)]
-    secrets.SystemRandom().shuffle(chars)
-
-    return "".join(chars)
-
-WORDS = [
-    "Shadow", "Dark", "Night", "Ghost", "Wolf",
-    "Dragon", "Fire", "Storm", "Blaze", "Frost",
-    "King", "Queen", "Legend", "Cyber", "Phantom",
-    "Venom", "Hunter", "Ninja", "Raven", "Angel",
-    "Toxic", "Zero", "Pixel", "Lucky", "Silent"
-]
-
-def generate_nick():
-    formats = [
-        lambda: secrets.choice(WORDS) + str(secrets.randbelow(9999)),
-        lambda: secrets.choice(WORDS) + "_" + secrets.choice(WORDS),
-        lambda: "xX" + secrets.choice(WORDS) + "Xx",
-        lambda: secrets.choice(WORDS) + str(secrets.randbelow(999)),
-        lambda: "_" + secrets.choice(WORDS) + "_"
-    ]
-
-    return secrets.choice(formats)()
-
-def check_strength(password):
-    score = 0
-    tips = []
-
-    if len(password) >= 12:
-        score += 2
-    elif len(password) >= 8:
-        score += 1
-    else:
-        tips.append("❌ Минимум 8 символов")
-
-    if any(c.islower() for c in password):
-        score += 1
-    else:
-        tips.append("❌ Добавь строчные буквы")
-
-    if any(c.isupper() for c in password):
-        score += 1
-    else:
-        tips.append("❌ Добавь заглавные буквы")
-
-    if any(c.isdigit() for c in password):
-        score += 1
-    else:
-        tips.append("❌ Добавь цифры")
-
-    if any(c in string.punctuation for c in password):
-        score += 1
-    else:
-        tips.append("❌ Добавь спецсимволы")
-
-    if score >= 5:
-        level = "🟢 ОЧЕНЬ НАДЁЖНЫЙ"
-    elif score >= 3:
-        level = "🟡 СРЕДНИЙ"
-    else:
-        level = "🔴 СЛАБЫЙ"
-
-    return level, tips
-
-# ============== КЛАВИАТУРЫ ==============
-
-def main_keyboard():
-    kb = InlineKeyboardMarkup(row_width=2)
-
-    kb.add(
-        InlineKeyboardButton("🔐 Пароли", callback_data="passwords"),
-        InlineKeyboardButton("🎮 Ники", callback_data="nicks")
-    )
-
-    kb.add(
-        InlineKeyboardButton("📚 Библиотека", callback_data="library"),
-        InlineKeyboardButton("🛡 Проверка", callback_data="check")
-    )
-
+def menu():
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("🎲 Генератор ников")
+    kb.row("🔐 Мои пароли", "⚙️ Настройки")
+    kb.row("👑 Админ-панель", "ℹ️ Помощь")
     return kb
 
-def password_keyboard():
-    kb = InlineKeyboardMarkup(row_width=2)
 
-    for length in [8, 12, 16, 20, 32, 64]:
-        kb.add(
-            InlineKeyboardButton(
-                f"🔐 {length} символов",
-                callback_data=f"gen_{length}"
-            )
-        )
-
-    kb.add(
-        InlineKeyboardButton("⬅️ Назад", callback_data="home")
+def register(user):
+    cur.execute(
+        "INSERT OR IGNORE INTO users VALUES (?, ?)",
+        (user.id, user.username or "unknown")
     )
-
-    return kb
-
-def admin_keyboard():
-    kb = InlineKeyboardMarkup(row_width=2)
-
-    kb.add(
-        InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"),
-        InlineKeyboardButton("👥 Пользователи", callback_data="admin_users")
+    cur.execute(
+        "INSERT OR IGNORE INTO stats VALUES (?, 0)",
+        (user.id,)
     )
+    db.commit()
 
-    kb.add(
-        InlineKeyboardButton("📈 Активность", callback_data="admin_activity"),
-        InlineKeyboardButton("⬅️ Назад", callback_data="home")
-    )
 
-    return kb
-
-# ============== СТАРТ ==============
+# ========== START ==========
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    register_user(message.from_user)
-    log_action(message.from_user.id, "Start")
-
+    register(message.from_user)
     bot.send_message(
         message.chat.id,
         "👋 Добро пожаловать!\n\n"
-        "🔐 Генератор паролей\n"
-        "🎮 Генератор ников\n"
-        "📚 Личная библиотека\n"
-        "🛡 Проверка паролей\n\n"
-        "Выбери действие:",
-        reply_markup=main_keyboard()
+        "🎲 Генератор никнеймов\n"
+        "🔐 Личная библиотека паролей\n"
+        "⚙️ Настройки\n"
+        "👑 Админ-панель",
+        reply_markup=menu()
     )
 
-# ============== КНОПКИ ==============
 
-@bot.callback_query_handler(func=lambda call: True)
-def callbacks(call):
-    uid = str(call.from_user.id)
-    chat = call.message.chat.id
-    data = call.data
+# ========== ГЕНЕРАТОР ==========
 
-    register_user(call.from_user)
+@bot.message_handler(func=lambda m: m.text == "🎲 Генератор ников")
+def generator(message):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton(
+        "🎲 Сгенерировать",
+        callback_data="generate"
+    ))
+    kb.add(types.InlineKeyboardButton(
+        "⚙️ Настройки",
+        callback_data="settings"
+    ))
+    bot.send_message(
+        message.chat.id,
+        "🎲 Генератор никнеймов",
+        reply_markup=kb
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "generate")
+def generate(call):
+    s = settings.get(call.from_user.id, {})
+    length = s.get("length", 12)
+    count = s.get("count", 5)
+    mode = s.get("mode", "mixed")
+
+    chars = string.ascii_lowercase
+
+    if mode in ["mixed", "numbers", "symbols"]:
+        chars += string.digits
+    if mode == "mixed":
+        chars += string.ascii_uppercase
+    if mode == "symbols":
+        chars += "_-."
+
+    result = []
+
+    for i in range(count):
+        nick = "".join(random.choice(chars) for _ in range(length))
+        result.append(f"`{nick}`")
+
+    cur.execute(
+        "UPDATE stats SET generations=generations+? WHERE user_id=?",
+        (count, call.from_user.id)
+    )
+    db.commit()
+
     bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        "🎲 Твои никнеймы:\n\n" + "\n".join(result),
+        parse_mode="Markdown"
+    )
 
-    if data == "home":
-        pending.pop(uid, None)
-        bot.send_message(
-            chat, "🏠 Главное меню",
-            reply_markup=main_keyboard()
-        )
 
-    elif data == "passwords":
-        bot.send_message(
-            chat,
-            "Выбери длину пароля:",
-            reply_markup=password_keyboard()
-        )
+# ========== НАСТРОЙКИ ==========
 
-    elif data.startswith("gen_"):
-        try:
-            length = int(data.split("_")[1])
-        except ValueError:
-            return
+@bot.callback_query_handler(func=lambda c: c.data == "settings")
+def settings_menu(call):
+    kb = types.InlineKeyboardMarkup(row_width=2)
 
-        if length not in [8, 12, 16, 20, 32, 64]:
-            return
+    for n in [6, 8, 10, 12, 16, 20, 24, 32]:
+        kb.add(types.InlineKeyboardButton(
+            f"{n} символов",
+            callback_data=f"len_{n}"
+        ))
 
-        password = generate_password(length)
-        last_generated[uid] = ("Пароль", password)
+    for mode, name in [
+        ("letters", "Буквы"),
+        ("numbers", "Цифры"),
+        ("mixed", "Смешанный"),
+        ("symbols", "Символы")
+    ]:
+        kb.add(types.InlineKeyboardButton(
+            name,
+            callback_data=f"mode_{mode}"
+        ))
 
-        log_action(uid, "Password generated")
+    for n in [1, 5, 10, 20, 50]:
+        kb.add(types.InlineKeyboardButton(
+            f"{n} ников",
+            callback_data=f"count_{n}"
+        ))
 
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("💾 Сохранить", callback_data="save")
-        )
-        kb.add(
-            InlineKeyboardButton("⬅️ Меню", callback_data="home")
-        )
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        "⚙️ Настройки генератора:",
+        reply_markup=kb
+    )
 
-        bot.send_message(
-            chat,
-            f"🔐 Твой пароль:\n\n<code>{password}</code>",
-            parse_mode="HTML",
-            reply_markup=kb
-        )
 
-    elif data == "nicks":
-        nick = generate_nick()
-        last_generated[uid] = ("Ник", nick)
+@bot.callback_query_handler(func=lambda c: c.data.startswith("len_"))
+def set_length(call):
+    settings.setdefault(call.from_user.id, {})["length"] = int(
+        call.data.split("_")[1]
+    )
+    bot.answer_callback_query(call.id, "Длина изменена!")
 
-        log_action(uid, "Nickname generated")
 
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("🔄 Ещё ник", callback_data="nicks"),
-            InlineKeyboardButton("💾 Сохранить", callback_data="save")
-        )
-        kb.add(
-            InlineKeyboardButton("⬅️ Меню", callback_data="home")
-        )
+@bot.callback_query_handler(func=lambda c: c.data.startswith("mode_"))
+def set_mode(call):
+    settings.setdefault(call.from_user.id, {})["mode"] = call.data[5:]
+    bot.answer_callback_query(call.id, "Режим изменён!")
 
-        bot.send_message(
-            chat,
-            f"🎮 Твой ник:\n\n<code>{nick}</code>",
-            parse_mode="HTML",
-            reply_markup=kb
-        )
 
-    elif data == "save":
-        if uid not in last_generated:
-            return bot.send_message(chat, "❌ Сначала создай пароль или ник.")
+@bot.callback_query_handler(func=lambda c: c.data.startswith("count_"))
+def set_count(call):
+    settings.setdefault(call.from_user.id, {})["count"] = int(
+        call.data.split("_")[1]
+    )
+    bot.answer_callback_query(call.id, "Количество изменено!")
 
-        pending[uid] = {"action": "save"}
-        bot.send_message(chat, "✏️ Напиши название записи:")
 
-    elif data == "library":
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("📋 Посмотреть", callback_data="lib_view")
-        )
-        kb.add(
-            InlineKeyboardButton("🗑 Удалить", callback_data="lib_delete")
-        )
-        kb.add(
-            InlineKeyboardButton("⬅️ Назад", callback_data="home")
-        )
+# ========== БИБЛИОТЕКА ПАРОЛЕЙ ==========
 
-        bot.send_message(
-            chat, "📚 Твоя личная библиотека:",
-            reply_markup=kb
-        )
+@bot.message_handler(func=lambda m: m.text == "🔐 Мои пароли")
+def vault(message):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton(
+        "➕ Добавить пароль", callback_data="add"
+    ))
+    kb.add(types.InlineKeyboardButton(
+        "📂 Мои записи", callback_data="list"
+    ))
+    bot.send_message(
+        message.chat.id,
+        "🔐 Твоя библиотека:",
+        reply_markup=kb
+    )
 
-    elif data == "lib_view":
-        db = load_json(DB_FILE)
-        records = db.get(uid, {})
 
-        if not records:
-            return bot.send_message(chat, "📭 Библиотека пуста.")
-
-        for name, item in records.items():
-            bot.send_message(
-                chat,
-                f"📌 <b>{name}</b>\n"
-                f"Тип: {item.get('type', 'Пароль')}\n"
-                f"<code>{item.get('value', '')}</code>",
-                parse_mode="HTML"
-            )
-
-    elif data == "lib_delete":
-        db = load_json(DB_FILE)
-        records = db.get(uid, {})
-
-        if not records:
-            return bot.send_message(chat, "📭 Библиотека пуста.")
-
-        kb = InlineKeyboardMarkup(row_width=1)
-
-        for index, name in enumerate(records):
-            kb.add(
-                InlineKeyboardButton(
-                    f"🗑 {name[:35]}",
-                    callback_data=f"del_{index}"
-                )
-            )
-
-        pending[uid] = {
-            "action": "delete",
-            "names": list(records.keys())
-        }
-
-        bot.send_message(
-            chat, "Выбери запись для удаления:",
-            reply_markup=kb
-        )
-
-    elif data.startswith("del_"):
-        state = pending.get(uid, {})
-
-        if state.get("action") != "delete":
-            return
-
-        try:
-            index = int(data[4:])
-            name = state["names"][index]
-        except (ValueError, IndexError, KeyError):
-            return bot.send_message(chat, "❌ Запись не найдена.")
-
-        db = load_json(DB_FILE)
-        records = db.get(uid, {})
-
-        if name in records:
-            del records[name]
-            save_json(DB_FILE, db)
-            log_action(uid, "Library entry deleted")
-
-        pending.pop(uid, None)
-        bot.send_message(chat, "✅ Запись удалена.")
-
-    elif data == "check":
-        pending[uid] = {"action": "check"}
-        bot.send_message(chat, "🛡 Отправь пароль для проверки.")
-
-    elif data == "admin_stats":
-        if call.from_user.id != ADMIN_ID:
-            return
-
-        users = load_json(USERS_FILE)
-        db = load_json(DB_FILE)
-        logs = load_json(LOG_FILE)
-
-        records = sum(len(v) for v in db.values())
-        actions = sum(len(v) for v in logs.values())
-
-        today = date.today().isoformat()
-        today_users = sum(
-            1 for u in users.values()
-            if u.get("joined", "").startswith(today)
-        )
-
-        bot.send_message(
-            chat,
-            "📊 <b>СТАТИСТИКА</b>\n\n"
-            f"👥 Всего пользователей: {len(users)}\n"
-            f"🆕 Регистраций сегодня: {today_users}\n"
-            f"📚 Записей в библиотеках: {records}\n"
-            f"⚡ Всего действий: {actions}",
-            parse_mode="HTML",
-            reply_markup=admin_keyboard()
-        )
-
-    elif data == "admin_users":
-        if call.from_user.id != ADMIN_ID:
-            return
-
-        users = load_json(USERS_FILE)
-
-        bot.send_message(
-            chat,
-            f"👥 Всего пользователей: {len(users)}"
-        )
-
-        for user_id, info in list(users.items())[:50]:
-            bot.send_message(
-                chat,
-                f"👤 {info.get('first_name', 'User')}\n"
-                f"ID: <code>{user_id}</code>\n"
-                f"Username: @{info.get('username', 'NoUsername')}\n"
-                f"Регистрация: {info.get('joined', '-')}",
-                parse_mode="HTML"
-            )
-
-    elif data == "admin_activity":
-        if call.from_user.id != ADMIN_ID:
-            return
-
-        logs = load_json(LOG_FILE)
-        total = sum(len(v) for v in logs.values())
-
-        bot.send_message(
-            chat,
-            f"📈 Всего действий: {total}\n"
-            f"Активных пользователей с логами: {len(logs)}"
-        )
-
-# ============== СООБЩЕНИЯ ==============
-
-@bot.message_handler(content_types=["text"])
-def handle_text(message):
-    uid = str(message.from_user.id)
-    register_user(message.from_user)
-
-    if message.text.startswith("/"):
+@bot.callback_query_handler(func=lambda c: c.data == "add")
+def add(call):
+    if call.message.chat.type != "private":
+        bot.answer_callback_query(call.id, "Только личный чат!")
         return
 
-    state = pending.get(uid)
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(
+        call.message.chat.id,
+        "Введи название записи:"
+    )
+    bot.register_next_step_handler(msg, add_name)
 
-    if not state:
-        return bot.send_message(
-            message.chat.id,
-            "Выбери действие в меню:",
-            reply_markup=main_keyboard()
-        )
 
-    action = state.get("action")
+def add_name(message):
+    if message.chat.type != "private":
+        return
+    name = (message.text or "").strip()[:80]
+    if not name:
+        bot.send_message(message.chat.id, "Название не может быть пустым.")
+        return
+    msg = bot.send_message(message.chat.id, "Теперь введи пароль:")
+    bot.register_next_step_handler(msg, add_password, name)
 
-    if action == "save":
-        title = message.text.strip()
 
-        if not title or len(title) > 50:
-            return bot.send_message(
-                message.chat.id,
-                "❌ Название должно быть от 1 до 50 символов."
-            )
+def add_password(message, name):
+    if message.chat.type != "private":
+        return
 
-        if uid not in last_generated:
-            pending.pop(uid, None)
-            return bot.send_message(message.chat.id, "❌ Создай новую запись.")
+    password = message.text or ""
+    if not password or len(password) > 500:
+        bot.send_message(message.chat.id, "Некорректный пароль.")
+        return
 
-        db = load_json(DB_FILE)
-        db.setdefault(uid, {})
+    encrypted = cipher.encrypt(password.encode()).decode()
 
-        db[uid][title] = {
-            "type": last_generated[uid][0],
-            "value": last_generated[uid][1],
-            "created": datetime.now().strftime("%Y-%m-%d %H:%M")
-        }
+    cur.execute(
+        "INSERT INTO passwords (user_id,name,password) VALUES (?,?,?)",
+        (message.from_user.id, name, encrypted)
+    )
+    db.commit()
 
-        save_json(DB_FILE, db)
-        pending.pop(uid, None)
+    bot.send_message(message.chat.id, "✅ Пароль сохранён в зашифрованном виде!")
 
-        log_action(uid, "Library entry saved")
 
-        bot.send_message(
-            message.chat.id,
-            "✅ Запись сохранена в твоей библиотеке!"
-        )
+@bot.callback_query_handler(func=lambda c: c.data == "list")
+def list_passwords(call):
+    cur.execute(
+        "SELECT id,name FROM passwords WHERE user_id=?",
+        (call.from_user.id,)
+    )
+    rows = cur.fetchall()
 
-    elif action == "check":
-        level, tips = check_strength(message.text)
-        result = level + "\n\n"
+    if not rows:
+        bot.answer_callback_query(call.id, "Библиотека пустая!")
+        return
 
-        result += (
-            "\n".join(tips)
-            if tips else "✅ Отличный набор символов!"
-        )
+    kb = types.InlineKeyboardMarkup()
 
-        pending.pop(uid, None)
-        log_action(uid, "Password checked")
+    for pid, name in rows:
+        kb.add(types.InlineKeyboardButton(
+            f"🔐 {name}",
+            callback_data=f"show_{pid}"
+        ))
 
-        bot.send_message(message.chat.id, result)
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        "Твои записи:",
+        reply_markup=kb
+    )
 
-# ============== АДМИН ==============
 
-@bot.message_handler(commands=["admin"])
+@bot.callback_query_handler(func=lambda c: c.data.startswith("show_"))
+def show_password(call):
+    pid = int(call.data.split("_")[1])
+
+    cur.execute(
+        "SELECT name,password FROM passwords WHERE id=? AND user_id=?",
+        (pid, call.from_user.id)
+    )
+    row = cur.fetchone()
+
+    if not row:
+        bot.answer_callback_query(call.id, "Запись не найдена!")
+        return
+
+    name, encrypted = row
+    password = cipher.decrypt(encrypted.encode()).decode()
+
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton(
+        "🗑 Удалить",
+        callback_data=f"del_{pid}"
+    ))
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        f"🔐 {name}\n\nПароль: `{password}`",
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("del_"))
+def delete_password(call):
+    pid = int(call.data.split("_")[1])
+
+    cur.execute(
+        "DELETE FROM passwords WHERE id=? AND user_id=?",
+        (pid, call.from_user.id)
+    )
+    db.commit()
+
+    bot.answer_callback_query(call.id, "Запись удалена!")
+    bot.send_message(call.message.chat.id, "🗑 Пароль удалён.")
+
+
+# ========== АДМИНКА ==========
+
+@bot.message_handler(func=lambda m: m.text == "👑 Админ-панель")
 def admin(message):
     if message.from_user.id != ADMIN_ID:
-        return bot.send_message(message.chat.id, "⛔ Нет доступа.")
+        return
+
+    cur.execute("SELECT COUNT(*) FROM users")
+    users = cur.fetchone()[0]
+
+    cur.execute("SELECT SUM(generations) FROM stats")
+    generations = cur.fetchone()[0] or 0
+
+    cur.execute("SELECT COUNT(*) FROM passwords")
+    passwords = cur.fetchone()[0]
 
     bot.send_message(
         message.chat.id,
-        "👑 АДМИН-ПАНЕЛЬ\n\nВыбери раздел:",
-        reply_markup=admin_keyboard()
+        "👑 АДМИН-ПАНЕЛЬ\n\n"
+        f"👥 Пользователей: {users}\n"
+        f"🎲 Генераций: {generations}\n"
+        f"🔐 Записей: {passwords}"
     )
 
-# ============== FLASK ==============
 
-@app.route("/")
+# ========== ПОМОЩЬ ==========
+
+@bot.message_handler(func=lambda m: m.text == "⚙️ Настройки")
+def settings_button(message):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton(
+        "Открыть настройки",
+        callback_data="settings"
+    ))
+    bot.send_message(message.chat.id, "Настройки:", reply_markup=kb)
+
+
+@bot.message_handler(func=lambda m: m.text == "ℹ️ Помощь")
+def help_button(message):
+    bot.send_message(
+        message.chat.id,
+        "ℹ️ Помощь\n\n"
+        "🎲 Генератор — создаёт никнеймы.\n"
+        "🔐 Библиотека — хранит твои записи.\n"
+        "⚙️ Настройки — длина, стиль и количество.\n"
+        "/start — перезапустить меню."
+    )
+
+
+# ========== WEBHOOK / FLASK ==========
+
+@app.route("/", methods=["GET"])
 def home():
-    return "Password Generator Bot is running!"
+    return "Bot is running!", 200
 
-@app.route("/health")
-def health():
-    return {"status": "ok"}
 
-# ============== ЗАПУСК ==============
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+        return "Forbidden", 403
 
-def run_bot():
-    print("🤖 Bot started!")
-    bot.remove_webhook()
-    bot.infinity_polling(
-        timeout=60,
-        long_polling_timeout=60,
-        skip_pending=True
+    update = telebot.types.Update.de_json(
+        request.get_data().decode("utf-8")
     )
+    bot.process_new_updates([update])
+    return "OK", 200
+
+
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "change_this_secret")
+
 
 if __name__ == "__main__":
-    threading.Thread(
-        target=run_bot,
-        daemon=True
-    ).start()
-
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    bot.infinity_polling(skip_pending=True)
