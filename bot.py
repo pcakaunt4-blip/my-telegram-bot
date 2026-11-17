@@ -232,6 +232,7 @@ def handle_text(message):
     bot.send_message(message.chat.id, response, parse_mode='Markdown')
     log_action(message.from_user.id, f"Check {score}")
 
+# --- АДМІНКА (РОБОЧА ВЕРСІЯ) ---
 @bot.message_handler(commands=['admin'])
 def admin_handler(message):
     if message.from_user.id != ADMIN_ID:
