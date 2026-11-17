@@ -10,7 +10,7 @@ from telebot import types
 
 # ========== НАСТРОЙКИ ==========
 
-TOKEN = "ВСТАВЬ_ТОКЕН_БОТА"
+TOKEN = "9060513665:AAFIsr_Ef0R1AY55f4I3O5s0tT110TGztOE"
 ADMIN_ID = 123456789  # ТВОЙ TELEGRAM ID
 
 bot = telebot.TeleBot(TOKEN)
