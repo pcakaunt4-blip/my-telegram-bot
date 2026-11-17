@@ -3,123 +3,70 @@ import os
 import sqlite3
 import string
 import secrets
-import html
 import threading
-from datetime import datetime
 
 import telebot
 from telebot import types
 from flask import Flask
 
-from cryptography.fernet import Fernet
 
+# ========== CONFIG ==========
 
-# =====================================
-# НАСТРОЙКИ
-# =====================================
-
-TOKEN = "ВСТАВЬ_СЮДА_ТОКЕН_BOTFATHER"
-ADMIN_ID = 123456789  # ТВОЙ TELEGRAM ID
+TOKEN = "ВСТАВЬ_ТОКЕН"
+ADMIN_ID = 123456789
 
 PORT = int(os.environ.get("PORT", 10000))
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-DB = "bot.db"
-LOCK = threading.Lock()
-
+DB = "database.db"
 settings = {}
-states = {}
+lock = threading.Lock()
 
 
-# =====================================
-# ШИФРОВАНИЕ
-# =====================================
-
-if not os.path.exists("secret.key"):
-    with open("secret.key", "wb") as f:
-        f.write(Fernet.generate_key())
-
-with open("secret.key", "rb") as f:
-    cipher = Fernet(f.read())
-
-
-# =====================================
-# БАЗА ДАННЫХ
-# =====================================
-
-def connect():
-    return sqlite3.connect(DB, timeout=30)
-
+# ========== DATABASE ==========
 
 def init_db():
-    with connect() as con:
+    with sqlite3.connect(DB) as con:
         con.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                joined TEXT
+                id INTEGER PRIMARY KEY,
+                username TEXT
             )
         """)
 
         con.execute("""
             CREATE TABLE IF NOT EXISTS stats (
-                user_id INTEGER PRIMARY KEY,
+                id INTEGER PRIMARY KEY,
                 generations INTEGER DEFAULT 0
-            )
-        """)
-
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS passwords (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                name TEXT,
-                password TEXT,
-                created TEXT
             )
         """)
 
 
 def register(user):
-    with LOCK, connect() as con:
-        con.execute("""
-            INSERT OR IGNORE INTO users
-            VALUES (?, ?, ?)
-        """, (
-            user.id,
-            user.username or "unknown",
-            datetime.now().isoformat()
-        ))
+    with lock, sqlite3.connect(DB) as con:
+        con.execute(
+            "INSERT OR IGNORE INTO users VALUES (?, ?)",
+            (user.id, user.username or "unknown")
+        )
 
-        con.execute("""
-            INSERT OR IGNORE INTO stats
-            VALUES (?, 0)
-        """, (user.id,))
+        con.execute(
+            "INSERT OR IGNORE INTO stats VALUES (?, 0)",
+            (user.id,)
+        )
 
 
-# =====================================
-# ГЛАВНОЕ МЕНЮ
-# =====================================
+# ========== MENUS ==========
 
 def main_menu():
     kb = types.ReplyKeyboardMarkup(
-        resize_keyboard=True,
-        row_width=2
+        resize_keyboard=True
     )
 
-    kb.add(
-        "🎲 Генератор ников",
-        "🔐 Мои пароли"
-    )
-
-    kb.add(
-        "⚙️ Настройки",
-        "ℹ️ Инструкция"
-    )
-
-    if ADMIN_ID:
-        kb.add("👑 Админ-панель")
+    kb.row("🎲 Генератор ников")
+    kb.row("⚙️ Настройки", "ℹ️ Помощь")
+    kb.row("👑 Админ-панель")
 
     return kb
 
@@ -128,7 +75,7 @@ def generator_menu():
     kb = types.InlineKeyboardMarkup()
 
     kb.add(types.InlineKeyboardButton(
-        "🎲 Сгенерировать ники",
+        "🎲 Создать ники",
         callback_data="generate"
     ))
 
@@ -140,9 +87,7 @@ def generator_menu():
     return kb
 
 
-# =====================================
-# START
-# =====================================
+# ========== START ==========
 
 @bot.message_handler(commands=["start"])
 def start(message):
@@ -155,19 +100,15 @@ def start(message):
         message.chat.id,
         "👋 Добро пожаловать!\n\n"
         "🎲 Генератор никнеймов\n"
-        "🔐 Личная библиотека паролей\n"
         "⚙️ Настройки генерации\n"
-        "👑 Админ-панель\n\n"
-        "Выбери нужный раздел:",
+        "👑 Админ-панель",
         reply_markup=main_menu()
     )
 
 
-# =====================================
-# ГЕНЕРАТОР НИКОВ
-# =====================================
+# ========== GENERATOR ==========
 
-def generate_nick(length, mode):
+def make_nick(length, mode):
     chars = string.ascii_lowercase
 
     if mode in ["numbers", "mixed", "symbols"]:
@@ -191,7 +132,7 @@ def generate_nick(length, mode):
 def generator(message):
     bot.send_message(
         message.chat.id,
-        "🎲 ГЕНЕРАТОР НИКНЕЙМОВ",
+        "🎲 ГЕНЕРАТОР НИКОВ",
         reply_markup=generator_menu()
     )
 
@@ -201,26 +142,24 @@ def generator(message):
 )
 def generate(call):
     uid = call.from_user.id
-
     s = settings.get(uid, {})
 
     length = s.get("length", 12)
     count = s.get("count", 5)
     mode = s.get("mode", "mixed")
 
-    result = []
+    result = [
+        make_nick(length, mode)
+        for _ in range(count)
+    ]
 
-    for _ in range(count):
-        result.append(generate_nick(length, mode))
+    with lock, sqlite3.connect(DB) as con:
+        con.execute(
+            "UPDATE stats SET generations = generations + ? WHERE id = ?",
+            (count, uid)
+        )
 
-    with LOCK, connect() as con:
-        con.execute("""
-            UPDATE stats
-            SET generations = generations + ?
-            WHERE user_id = ?
-        """, (count, uid))
-
-    text = "🎲 <b>ТВОИ НИКНЕЙМЫ</b>\n\n"
+    text = "🎲 ТВОИ НИКИ:\n\n"
 
     for i, nick in enumerate(result, 1):
         text += f"{i}. <code>{nick}</code>\n"
@@ -235,9 +174,7 @@ def generate(call):
     )
 
 
-# =====================================
-# НАСТРОЙКИ
-# =====================================
+# ========== SETTINGS ==========
 
 def show_settings(chat_id):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -245,30 +182,21 @@ def show_settings(chat_id):
     for n in [6, 8, 10, 12, 16, 20, 24, 32]:
         kb.add(types.InlineKeyboardButton(
             f"📏 {n} символов",
-            callback_data=f"len:{n}"
+            callback_data=f"length:{n}"
         ))
 
-    kb.add(
-        types.InlineKeyboardButton(
-            "🔤 Буквы",
-            callback_data="mode:letters"
-        ),
-        types.InlineKeyboardButton(
-            "🔢 Цифры",
-            callback_data="mode:numbers"
-        )
-    )
+    modes = [
+        ("letters", "🔤 Буквы"),
+        ("numbers", "🔢 Цифры"),
+        ("mixed", "🔠 Смешанный"),
+        ("symbols", "✨ Символы")
+    ]
 
-    kb.add(
-        types.InlineKeyboardButton(
-            "🔠 Смешанный",
-            callback_data="mode:mixed"
-        ),
-        types.InlineKeyboardButton(
-            "✨ Символы",
-            callback_data="mode:symbols"
-        )
-    )
+    for mode, name in modes:
+        kb.add(types.InlineKeyboardButton(
+            name,
+            callback_data=f"mode:{mode}"
+        ))
 
     for n in [1, 5, 10, 20, 50]:
         kb.add(types.InlineKeyboardButton(
@@ -278,8 +206,7 @@ def show_settings(chat_id):
 
     bot.send_message(
         chat_id,
-        "⚙️ <b>НАСТРОЙКИ ГЕНЕРАТОРА</b>",
-        parse_mode="HTML",
+        "⚙️ НАСТРОЙКИ ГЕНЕРАТОРА",
         reply_markup=kb
     )
 
@@ -300,18 +227,18 @@ def settings_callback(call):
 
 
 @bot.callback_query_handler(
-    func=lambda c: c.data.startswith("len:")
+    func=lambda c: c.data.startswith("length:")
 )
 def set_length(call):
-    n = int(call.data.split(":")[1])
+    value = int(call.data.split(":")[1])
 
     settings.setdefault(
         call.from_user.id, {}
-    )["length"] = n
+    )["length"] = value
 
     bot.answer_callback_query(
         call.id,
-        f"Длина: {n} символов"
+        f"Длина: {value}"
     )
 
 
@@ -319,11 +246,11 @@ def set_length(call):
     func=lambda c: c.data.startswith("mode:")
 )
 def set_mode(call):
-    mode = call.data.split(":")[1]
+    value = call.data.split(":")[1]
 
     settings.setdefault(
         call.from_user.id, {}
-    )["mode"] = mode
+    )["mode"] = value
 
     bot.answer_callback_query(
         call.id,
@@ -335,260 +262,22 @@ def set_mode(call):
     func=lambda c: c.data.startswith("count:")
 )
 def set_count(call):
-    n = int(call.data.split(":")[1])
+    value = int(call.data.split(":")[1])
 
     settings.setdefault(
         call.from_user.id, {}
-    )["count"] = n
+    )["count"] = value
 
     bot.answer_callback_query(
         call.id,
-        f"Количество: {n}"
+        f"Количество: {value}"
     )
 
 
-# =====================================
-# БИБЛИОТЕКА ПАРОЛЕЙ
-# =====================================
-
-@bot.message_handler(
-    func=lambda m: m.text == "🔐 Мои пароли"
-)
-def vault(message):
-    if message.chat.type != "private":
-        return
-
-    kb = types.InlineKeyboardMarkup()
-
-    kb.add(types.InlineKeyboardButton(
-        "➕ Добавить пароль",
-        callback_data="add"
-    ))
-
-    kb.add(types.InlineKeyboardButton(
-        "📂 Мои записи",
-        callback_data="list"
-    ))
-
-    bot.send_message(
-        message.chat.id,
-        "🔐 <b>ЛИЧНАЯ БИБЛИОТЕКА</b>",
-        parse_mode="HTML",
-        reply_markup=kb
-    )
-
-
-@bot.callback_query_handler(
-    func=lambda c: c.data == "add"
-)
-def add_password_start(call):
-    if call.message.chat.type != "private":
-        bot.answer_callback_query(call.id)
-        return
-
-    states[call.from_user.id] = {
-        "step": "name"
-    }
-
-    bot.answer_callback_query(call.id)
-
-    bot.send_message(
-        call.message.chat.id,
-        "📝 Введи название записи:"
-    )
-
-
-def save_name(message):
-    name = (message.text or "").strip()
-
-    if not name or len(name) > 80:
-        bot.send_message(
-            message.chat.id,
-            "Название должно содержать от 1 до 80 символов."
-        )
-        return
-
-    states[message.from_user.id] = {
-        "step": "password",
-        "name": name
-    }
-
-    bot.send_message(
-        message.chat.id,
-        "🔐 Теперь введи пароль:"
-    )
-
-
-def save_password(message):
-    password = message.text or ""
-
-    if not password or len(password) > 500:
-        bot.send_message(
-            message.chat.id,
-            "Некорректный пароль. Попробуй ещё раз."
-        )
-        return
-
-    uid = message.from_user.id
-    name = states[uid]["name"]
-
-    encrypted = cipher.encrypt(
-        password.encode()
-    ).decode()
-
-    with LOCK, connect() as con:
-        con.execute("""
-            INSERT INTO passwords
-            (user_id, name, password, created)
-            VALUES (?, ?, ?, ?)
-        """, (
-            uid,
-            name,
-            encrypted,
-            datetime.now().isoformat()
-        ))
-
-    states.pop(uid, None)
-
-    bot.send_message(
-        message.chat.id,
-        "✅ Пароль успешно сохранён!"
-    )
-
-
-@bot.callback_query_handler(
-    func=lambda c: c.data == "list"
-)
-def list_passwords(call):
-    uid = call.from_user.id
-
-    with connect() as con:
-        rows = con.execute("""
-            SELECT id, name
-            FROM passwords
-            WHERE user_id = ?
-            ORDER BY id DESC
-        """, (uid,)).fetchall()
-
-    bot.answer_callback_query(call.id)
-
-    if not rows:
-        bot.send_message(
-            call.message.chat.id,
-            "📂 Твоя библиотека пока пустая."
-        )
-        return
-
-    kb = types.InlineKeyboardMarkup()
-
-    for pid, name in rows:
-        kb.add(types.InlineKeyboardButton(
-            f"🔐 {name[:35]}",
-            callback_data=f"show:{pid}"
-        ))
-
-    bot.send_message(
-        call.message.chat.id,
-        "📂 ТВОИ ЗАПИСИ:",
-        reply_markup=kb
-    )
-
-
-@bot.callback_query_handler(
-    func=lambda c: c.data.startswith("show:")
-)
-def show_password(call):
-    uid = call.from_user.id
-    pid = int(call.data.split(":")[1])
-
-    with connect() as con:
-        row = con.execute("""
-            SELECT name, password
-            FROM passwords
-            WHERE id = ? AND user_id = ?
-        """, (pid, uid)).fetchone()
-
-    if not row:
-        bot.answer_callback_query(
-            call.id,
-            "Запись не найдена!"
-        )
-        return
-
-    name, encrypted = row
-
-    password = cipher.decrypt(
-        encrypted.encode()
-    ).decode()
-
-    kb = types.InlineKeyboardMarkup()
-
-    kb.add(types.InlineKeyboardButton(
-        "🗑 Удалить",
-        callback_data=f"delete:{pid}"
-    ))
-
-    bot.answer_callback_query(call.id)
-
-    bot.send_message(
-        call.message.chat.id,
-        f"🔐 <b>{html.escape(name)}</b>\n\n"
-        f"<code>{html.escape(password)}</code>",
-        parse_mode="HTML",
-        reply_markup=kb
-    )
-
-
-@bot.callback_query_handler(
-    func=lambda c: c.data.startswith("delete:")
-)
-def delete_password(call):
-    uid = call.from_user.id
-    pid = int(call.data.split(":")[1])
-
-    with LOCK, connect() as con:
-        cur = con.execute("""
-            DELETE FROM passwords
-            WHERE id = ? AND user_id = ?
-        """, (pid, uid))
-
-        deleted = cur.rowcount
-
-    bot.answer_callback_query(
-        call.id,
-        "Запись удалена!" if deleted else "Запись не найдена!"
-    )
-
-
-@bot.message_handler(
-    func=lambda m: states.get(m.from_user.id, {}).get("step")
-    in ("name", "password")
-)
-def password_input(message):
-    if message.chat.type != "private":
-        return
-
-    if message.content_type != "text":
-        bot.reply_to(message, "Отправь текст.")
-        return
-
-    state = states.get(message.from_user.id)
-
-    if not state:
-        return
-
-    if state["step"] == "name":
-        save_name(message)
-    else:
-        save_password(message)
-
-
-# =====================================
-# АДМИН-ПАНЕЛЬ
-# =====================================
+# ========== ADMIN PANEL ==========
 
 def show_admin(chat_id):
-    with connect() as con:
+    with sqlite3.connect(DB) as con:
         users = con.execute(
             "SELECT COUNT(*) FROM users"
         ).fetchone()[0]
@@ -597,27 +286,20 @@ def show_admin(chat_id):
             "SELECT COALESCE(SUM(generations), 0) FROM stats"
         ).fetchone()[0]
 
-        passwords = con.execute(
-            "SELECT COUNT(*) FROM passwords"
-        ).fetchone()[0]
+    kb = types.InlineKeyboardMarkup()
+
+    kb.add(types.InlineKeyboardButton(
+        "🔄 Обновить статистику",
+        callback_data="admin_refresh"
+    ))
 
     bot.send_message(
         chat_id,
-        "👑 <b>АДМИН-ПАНЕЛЬ</b>\n\n"
+        "👑 АДМИН-ПАНЕЛЬ\n\n"
         f"👥 Пользователей: {users}\n"
-        f"🎲 Генераций: {generations}\n"
-        f"🔐 Сохранённых записей: {passwords}\n\n"
-        "🔒 Чужие пароли недоступны.",
-        parse_mode="HTML"
+        f"🎲 Всего генераций: {generations}",
+        reply_markup=kb
     )
-
-
-@bot.message_handler(commands=["admin"])
-def admin_command(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    show_admin(message.chat.id)
 
 
 @bot.message_handler(
@@ -630,38 +312,48 @@ def admin_button(message):
     show_admin(message.chat.id)
 
 
-# =====================================
-# ИНСТРУКЦИЯ
-# =====================================
+@bot.message_handler(commands=["admin"])
+def admin_command(message):
+    if message.from_user.id == ADMIN_ID:
+        show_admin(message.chat.id)
+
+
+@bot.callback_query_handler(
+    func=lambda c: c.data == "admin_refresh"
+)
+def admin_refresh(call):
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "Нет доступа!")
+        return
+
+    bot.answer_callback_query(call.id, "Обновлено!")
+    show_admin(call.message.chat.id)
+
+
+# ========== HELP ==========
 
 @bot.message_handler(
-    func=lambda m: m.text == "ℹ️ Инструкция"
+    func=lambda m: m.text == "ℹ️ Помощь"
 )
 def help_button(message):
     bot.send_message(
         message.chat.id,
-        "📖 <b>ИНСТРУКЦИЯ</b>\n\n"
-        "🎲 Генератор — создание ников.\n"
-        "⚙️ Настройки — длина, стиль и количество.\n"
-        "🔐 Мои пароли — личная библиотека.\n"
-        "/start — главное меню.\n"
-        "/admin — админ-панель.",
-        parse_mode="HTML"
+        "📖 ИНСТРУКЦИЯ\n\n"
+        "/start — главное меню\n"
+        "/admin — админ-панель\n\n"
+        "🎲 Генератор — создание ников\n"
+        "⚙️ Настройки — длина, режим и количество"
     )
 
 
-# =====================================
-# FLASK ДЛЯ RENDER
-# =====================================
+# ========== FLASK ==========
 
 @app.route("/")
 def home():
-    return "BOT ONLINE", 200
+    return "BOT IS ONLINE", 200
 
 
-# =====================================
-# ЗАПУСК
-# =====================================
+# ========== RUN ==========
 
 def run_bot():
     bot.remove_webhook()
