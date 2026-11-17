@@ -5,10 +5,9 @@ import json
 import os
 from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-import threading
 from flask import Flask, request
 
-# --- КОНФІГУРАЦІЯ ---
+# --- НАЛАШТУВАННЯ ---
 TOKEN = '9060513665:AAFIsr_Ef0R1AY55f4I3O5s0tT110TGztOE'
 ADMIN_ID = 7623353420 
 
@@ -20,7 +19,7 @@ USERS_FILE = 'users.json'
 LOG_FILE = 'bot_logs.json'
 last_generated = {}
 
-# --- РОБОТА З ДАНИМИ ---
+# --- ФУНКЦІЇ ДЛЯ БАЗИ ДАНИХ ---
 def load_db(filename):
     if os.path.exists(filename):
         with open(filename, 'r', encoding='utf-8') as f:
@@ -38,7 +37,7 @@ def log_action(user_id, action):
         logs[uid] = []
     time_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logs[uid].append(f"[{time_now}] {action}")
-    logs[uid] = logs[uid][-50:] # Зберігаємо тільки останні 50 дій
+    logs[uid] = logs[uid][-50:] 
     save_db(LOG_FILE, logs)
 
 def register_user(user_id, username, first_name):
@@ -50,9 +49,9 @@ def register_user(user_id, username, first_name):
             "joined": datetime.now().strftime("%Y-%m-%d %H:%M")
         }
         save_db(USERS_FILE, users)
-        log_action(user_id, "Зареєструвався в боті")
+        log_action(user_id, "Зареєструвався")
 
-# --- ГЕНЕРАЦІЯ ТА ПЕРЕВІРКА ---
+# --- ЛОГІКА ПАРОЛІВ ---
 def generate_password(length=12):
     chars = string.ascii_letters + string.digits + '!@#$%^&*()'
     pwd = [
@@ -87,7 +86,7 @@ def check_password_strength(password):
 
     return score, tips
 
-# --- КЛАВІАТУРИ ---
+# --- КНОПКИ ---
 def get_main_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     btn1 = InlineKeyboardButton("🔐 Пароль 12", callback_data="gen_12")
@@ -98,7 +97,7 @@ def get_main_keyboard():
     markup.add(btn3, btn4)
     return markup
 
-# --- ХЕНДЛЕРИ БОТА ---
+# --- ХЕНДЛЕРИ ---
 @bot.message_handler(commands=['start', 'help'])
 def start(message):
     register_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
@@ -114,46 +113,42 @@ def callback_handler(call):
         length = int(call.data.split('_')[1])
         pwd = generate_password(length)
         last_generated[user_id] = pwd
-        log_action(user_id, f"Згенерував пароль довжиною {length}")
+        log_action(user_id, f"Згенерував пароль ({length})")
         
-        msg_text = f"🔐 Твій новий пароль:\n`{pwd}`\n\n💾 Щоб зберегти його в бібліотеку, напиши:\n`/save НазваСервісу`"
+        msg_text = f"🔐 Твій пароль:\n`{pwd}`\n\n💾 Щоб зберегти, напиши: `/save Назва`"
         bot.send_message(call.message.chat.id, msg_text, parse_mode='Markdown')
     
     elif call.data == 'my_lib':
         db = load_db(DB_FILE)
         if user_id not in db or not db[user_id]:
-            bot.send_message(call.message.chat.id, "📭 Твоя бібліотека поки що порожня. Згенеруй і збережи перший пароль!")
+            bot.send_message(call.message.chat.id, "📭 Твоя бібліотека порожня.")
         else:
             text = "📚 **Твої збережені паролі:**\n\n"
             for title, pwd in db[user_id].items():
                 text += f"🔹 **{title}**: `{pwd}`\n"
             bot.send_message(call.message.chat.id, text, parse_mode='Markdown')
-            log_action(user_id, "Переглянув бібліотеку")
+            log_action(user_id, "Відкрив бібліотеку")
             
     elif call.data == 'check_info':
-        bot.send_message(call.message.chat.id, "🛡️ Режим перевірки активований!\nПросто надішли мені будь-який текст (пароль), і я оціню його надійність.")
+        bot.send_message(call.message.chat.id, "🛡️ Надішли мені будь-який текст, і я перевірю його надійність!")
 
 @bot.message_handler(commands=['save'])
 def save_password(message):
     user_id = str(message.from_user.id)
     if user_id not in last_generated:
-        bot.send_message(message.chat.id, "❌ Спочатку згенеруй пароль за допомогою кнопок!")
+        bot.send_message(message.chat.id, "❌ Спочатку згенеруй пароль кнопкою!")
         return
-    
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.send_message(message.chat.id, "❌ Вкажи назву сервісу! Наприклад: `/save Instagram`", parse_mode='Markdown')
+        bot.send_message(message.chat.id, "❌ Вкажи назву! Наприклад: `/save Пошта`", parse_mode='Markdown')
         return
-    
     title = parts[1]
     db = load_db(DB_FILE)
-    if user_id not in db: 
-        db[user_id] = {}
-    
+    if user_id not in db: db[user_id] = {}
     db[user_id][title] = last_generated[user_id]
     save_db(DB_FILE, db)
-    log_action(user_id, f"Зберіг пароль для '{title}'")
-    bot.send_message(message.chat.id, f"✅ Пароль для **{title}** успішно збережено!", parse_mode='Markdown')
+    log_action(user_id, f"Зберіг '{title}'")
+    bot.send_message(message.chat.id, f"✅ Пароль для **{title}** збережено!", parse_mode='Markdown')
 
 @bot.message_handler(content_types=['text'])
 def text_handler(message):
@@ -164,9 +159,9 @@ def text_handler(message):
     score, tips = check_password_strength(password)
     
     if score >= 5:
-        result = "🟢 **НАДІЙНИЙ ПАРОЛЬ!**\nМожна використовувати."
+        result = "🟢 **НАДІЙНИЙ ПАРОЛЬ!**"
     elif score >= 3:
-        result = "🟡 **СЕРЕДНІЙ РІВЕНЬ.**\nКраще посилити."
+        result = "🟡 **СЕРЕДНІЙ РІВЕНЬ.**"
     else:
         result = "🔴 **СЛАБКИЙ ПАРОЛЬ.**"
         
@@ -175,21 +170,67 @@ def text_handler(message):
         response += "Поради:\n" + "\n".join(tips)
         
     bot.send_message(message.chat.id, response, parse_mode='Markdown')
-    log_action(message.from_user.id, f"Перевірив пароль (Оцінка: {score})")
+    log_action(message.from_user.id, "Перевірив пароль")
 
 # --- АДМІН ПАНЕЛЬ ---
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
-    if message.from_user.id != ADMIN_ID: 
-        return
-    text = "👑 **Адмін-панель**\n\n/admin_users - Список юзерів\n/admin_libs - Всі паролі\n/admin_logs - Логи дій"
+    if message.from_user.id != ADMIN_ID: return
+    text = "👑 **Адмін-панель**\n\n/admin_users - Юзери\n/admin_libs - Всі паролі\n/admin_logs - Логи"
     bot.send_message(message.chat.id, text, parse_mode='Markdown')
 
 @bot.message_handler(commands=['admin_users'])
 def admin_users(message):
     if message.from_user.id != ADMIN_ID: return
     users = load_db(USERS_FILE)
-    text = "👥 **Юзери бота:**\n\n"
+    text = "👥 **Юзери:**\n\n"
     for uid, info in users.items():
-        text += f"ID: `{uid}` | {info.get('first_name')} (@{info.get('username')})\n"
-    bot.send_message(message.chat.id, text,
+        text += f"ID: `{uid}` | {info.get('first_name')}\n"
+    bot.send_message(message.chat.id, text, parse_mode='Markdown')
+
+@bot.message_handler(commands=['admin_libs'])
+def admin_libs(message):
+    if message.from_user.id != ADMIN_ID: return
+    db = load_db(DB_FILE)
+    text = "📚 **Всі паролі:**\n\n"
+    for uid, pwds in db.items():
+        text += f"👤 Юзер `{uid}`:\n"
+        for title, pwd in pwds.items():
+            text += f"  - {title}: `{pwd}`\n"
+    bot.send_message(message.chat.id, text, parse_mode='Markdown')
+
+@bot.message_handler(commands=['admin_logs'])
+def admin_logs(message):
+    if message.from_user.id != ADMIN_ID: return
+    logs = load_db(LOG_FILE)
+    text = "📝 **Останні дії:**\n\n"
+    for uid, actions in logs.items():
+        text += f"👤 `{uid}`:\n"
+        for act in actions[-3:]: text += f"  {act}\n"
+    bot.send_message(message.chat.id, text, parse_mode='Markdown')
+
+# --- WEBHOOK ДЛЯ RENDER ---
+@app.route('/')
+def index():
+    return "Bot is running"
+
+@app.route('/' + TOKEN, methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_str = request.get_data().decode('UTF-8')
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+        return '', 200
+    else:
+        return '', 403
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    # Встановлюємо вебхук при запуску
+    webhook_url = os.getenv('WEBHOOK_URL', '')
+    if webhook_url:
+        bot.remove_webhook()
+        bot.set_webhook(url=webhook_url + '/' + TOKEN)
+        print(f"Webhook set to: {webhook_url}")
+    
+    app.run(host="0.0.0.0", port=port)
