@@ -11,7 +11,7 @@ from telebot.types import Update, InlineKeyboardMarkup, InlineKeyboardButton
 # --- НАЛАШТУВАННЯ ---
 TOKEN = '9060513665:AAFIsr_Ef0R1AY55f4I3O5s0tT110TGztOE'
 ADMIN_ID = 7623353420
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '') # Важливо: задай це в Render!
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '') 
 
 # Ініціалізація
 bot = TeleBot(TOKEN)
@@ -65,23 +65,22 @@ def generate_password(length=12):
 
 def check_strength(password):
     score, tips = 0, []
-    checks = [
-        (len(password) >= 12, 2, "❌ Зроби довшим (мін. 8 символів)."),
-        (len(password) >= 8, 1, "❌ Зроби довшим (мін. 8 символів)."),
-        (any(c.isupper() for c in password), 1, "❌ Додай ВЕЛИКУ літеру."),
-        (any(c.islower() for c in password), 1, "❌ Додай малу літеру."),
-        (any(c.isdigit() for c in password), 1, "❌ Додай цифру."),
-        (any(c in '!@#$%^&*()' for c in password), 1, "❌ Додай спецсимвол.")
-    ]
     
-    # Обробка довжини окремо, щоб не дублювати поради
     if len(password) >= 12: score += 2
     elif len(password) >= 8: score += 1
     else: tips.append("❌ Зроби довшим (мін. 8 символів).")
 
-    for condition, points, tip in checks[2:]:
-        if condition: score += points
-        else: tips.append(tip)
+    if any(c.isupper() for c in password): score += 1
+    else: tips.append("❌ Додай ВЕЛИКУ літеру.")
+    
+    if any(c.islower() for c in password): score += 1
+    else: tips.append("❌ Додай малу літеру.")
+    
+    if any(c.isdigit() for c in password): score += 1
+    else: tips.append("❌ Додай цифру.")
+    
+    if any(c in '!@#$%^&*()' for c in password): score += 1
+    else: tips.append("❌ Додай спецсимвол.")
         
     return score, tips
 
@@ -184,7 +183,7 @@ def admin_handler(message):
     text = ADMIN_CMDS[cmd]() if callable(ADMIN_CMDS[cmd]) else ADMIN_CMDS[cmd]
     bot.send_message(message.chat.id, text, parse_mode='Markdown')
 
-# --- FLASK WEBHOOK (САМЕ ТУТ МАГІЯ ДЛЯ RENDER) ---
+# --- FLASK WEBHOOK ---
 @app.route('/', methods=['GET'])
 def health_check():
     return jsonify({"status": "ok", "time": datetime.now().isoformat()})
@@ -197,18 +196,21 @@ def webhook():
         return '', 200
     return '', 403
 
-# --- ЗАПУСК ---
+# --- ЗАПУСК (БЕЗПЕЧНА ВЕРСІЯ ДЛЯ RENDER) ---
 if __name__ == "__main__":
-    # ⚡ КРИТИЧНО ВАЖЛИВО ДЛЯ RENDER:
-    # 1. Видаляємо старий вебхук (щоб не було дублів)
-    # 2. drop_pending_updates=True скидає всі повідомлення, що прийшли поки бот спав
-    bot.remove_webhook(drop_pending_updates=True)
-    
+    # Безпечне видалення вебхука без аргументів, що ламають бота
+    try:
+        bot.remove_webhook()
+        print("✅ Старий вебхук видалено")
+    except Exception as e:
+        print(f"⚠️ Помилка при видаленні вебхука: {e}")
+
     if WEBHOOK_URL:
         bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-        logging.info(f"✅ Webhook set: {WEBHOOK_URL}")
+        print(f"✅ Новий вебхук встановлено: {WEBHOOK_URL}")
     else:
-        logging.warning("⚠️ WEBHOOK_URL не знайдено! Бот не буде отримувати повідомлення.")
+        print("⚠️ УВАГА: Змінна WEBHOOK_URL не знайдена в Render!")
 
     port = int(os.environ.get("PORT", 5000))
+    print(f"🚀 Бот запущено на порту {port}")
     app.run(host="0.0.0.0", port=port)
