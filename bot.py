@@ -161,6 +161,5 @@ def text_handler(message):
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     if message.from_user.id != ADMIN_ID: return
-    users = load_db(USERS_FILE)
-    db = load_db(DB_FILE)
-    text = f"👑 **Адмін-панель**\n\n👥 Юзерів: {len(users)}\n💾 Паролів: {sum(len(p) for p in db.values
+    text = "Адмін-панель\n\n/admin_users - Юзери\n/admin_libs - Всі паролі\n/admin_logs - Логи"
+    bot.send_message(message.chat.id, text)
