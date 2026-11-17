@@ -3,6 +3,7 @@ import json
 import random
 import string
 import threading
+import time
 from datetime import datetime
 from flask import Flask
 from telebot import TeleBot
@@ -232,7 +233,7 @@ def handle_text(message):
     bot.send_message(message.chat.id, response, parse_mode='Markdown')
     log_action(message.from_user.id, f"Check {score}")
 
-# --- АДМІНКА (РОБОЧА ВЕРСІЯ) ---
+# --- АДМІНКА ---
 @bot.message_handler(commands=['admin'])
 def admin_handler(message):
     if message.from_user.id != ADMIN_ID:
@@ -327,8 +328,18 @@ def home():
 
 def run_bot():
     print("🤖 Long Polling started...")
-    bot.remove_webhook()
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    # Видаляємо вебхук і скидаємо всі pending updates
+    bot.remove_webhook(drop_pending_updates=True)
+    time.sleep(2)  # Чекаємо 2 секунди, щоб Telegram обробив видалення
+    
+    # Запускаємо polling з обробкою помилок
+    while True:
+        try:
+            bot.infinity_polling(timeout=60, long_polling_timeout=60)
+        except Exception as e:
+            print(f"❌ Polling error: {e}")
+            print("🔄 Перезапуск через 5 секунд...")
+            time.sleep(5)
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
